@@ -162,6 +162,9 @@ export default function SettingsScreen({ navigation }: { navigation: any }) {
         </View>
       </View>
 
+      {/* Versiyon */}
+      <Text style={[styles.version, { color: c.subtext }]}>V0.2</Text>
+
       {/* Sıfırla */}
       <TouchableOpacity
         style={[styles.resetBtn, { borderColor: c.danger }]}
@@ -332,6 +335,7 @@ const styles = StyleSheet.create({
   langBtnText: { fontSize: 15, fontWeight: '600' },
   themeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   themeLabel: { fontSize: 16, fontWeight: '600' },
+  version: { textAlign: 'center', fontSize: 13, fontWeight: '600', marginBottom: 12 },
   resetBtn: { borderRadius: 16, borderWidth: 2, padding: 18, alignItems: 'center', marginTop: 8 },
   resetText: { fontSize: 16, fontWeight: '700' },
 

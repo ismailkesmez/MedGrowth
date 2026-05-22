@@ -24,6 +24,7 @@ export interface MedicationSchema {
   date: string; // YYYY-MM-DD
   isTaken: boolean;
   isRecurring: boolean;
+  notes?: string;
   notificationId?: string;
 }
 

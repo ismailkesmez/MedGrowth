@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
   StyleSheet, Modal, Platform, ScrollView,
@@ -19,81 +19,114 @@ function toDateStr(d: Date) {
   return `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
 }
 function dateFromStr(s: string) {
-  // noon to avoid DST shifts
   return new Date(s + 'T12:00:00');
 }
 
 const TR_DAYS = ['Paz','Pzt','Sal','Çar','Per','Cum','Cmt'];
 
-// ── Takvim Şeridi ─────────────────────────────────────────────────────────────
+const CELL_W = 50;
+const PAST_DAYS = 2;
+const FUTURE_DAYS = 30;
+
+// ── Takvim Şeridi (geçmiş + gelecek, yatay kaydırmalı) ───────────────────────
 function CalendarStrip({ selected, onSelect, c }: {
   selected: string; onSelect: (d: string) => void; c: any;
 }) {
   const today = new Date();
   const todayStr = toDateStr(today);
-  const days = Array.from({ length: 7 }, (_, i) => {
+  const listRef = useRef<any>(null);
+
+  const days: Date[] = [];
+  for (let i = -PAST_DAYS; i <= FUTURE_DAYS; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
-    return d;
-  });
+    days.push(d);
+  }
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      listRef.current?.scrollToIndex({
+        index: PAST_DAYS,
+        animated: false,
+        viewPosition: 0.5,
+      });
+    }, 100);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
-    <View style={[cal.strip, { backgroundColor: c.card, borderBottomColor: c.border }]}>
-      {days.map((d, i) => {
+    <FlatList
+      ref={listRef}
+      data={days}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={{ backgroundColor: c.card, borderBottomWidth: 1, borderBottomColor: c.border }}
+      contentContainerStyle={{ paddingVertical: 10 }}
+      getItemLayout={(_, index) => ({ length: CELL_W, offset: CELL_W * index, index })}
+      initialScrollIndex={PAST_DAYS}
+      onScrollToIndexFailed={() => {
+        setTimeout(() => {
+          listRef.current?.scrollToIndex({ index: PAST_DAYS, animated: false, viewPosition: 0.5 });
+        }, 300);
+      }}
+      keyExtractor={(_, i) => String(i)}
+      renderItem={({ item: d }) => {
         const s = toDateStr(d);
         const isSel = s === selected;
+        const isPast = s < todayStr;
         return (
           <TouchableOpacity
-            key={s}
-            style={[cal.cell, isSel && { backgroundColor: c.primary, borderRadius: 10 }]}
+            style={[{ width: CELL_W, alignItems: 'center', paddingVertical: 8, borderRadius: 10 },
+              isSel && { backgroundColor: c.primary }]}
             onPress={() => onSelect(s)}
             activeOpacity={0.75}
           >
-            <Text style={[cal.name, { color: isSel ? '#fff' : c.subtext }]}>
-              {i === 0 ? 'Bug.' : TR_DAYS[d.getDay()]}
+            <Text style={{
+              fontSize: 11, fontWeight: '600', marginBottom: 4,
+              color: isSel ? '#fff' : isPast ? c.subtext + 'AA' : c.subtext,
+            }}>
+              {s === todayStr ? 'Bug.' : TR_DAYS[d.getDay()]}
             </Text>
-            <Text style={[cal.num, { color: isSel ? '#fff' : c.text }]}>
+            <Text style={{
+              fontSize: 16, fontWeight: '800',
+              color: isSel ? '#fff' : isPast ? c.subtext : c.text,
+            }}>
               {d.getDate()}
             </Text>
             {s === todayStr && !isSel && (
-              <View style={[cal.dot, { backgroundColor: c.primary }]} />
+              <View style={{ width: 4, height: 4, borderRadius: 2, marginTop: 3, backgroundColor: c.primary }} />
             )}
           </TouchableOpacity>
         );
-      })}
-    </View>
+      }}
+    />
   );
 }
-const cal = StyleSheet.create({
-  strip: { flexDirection: 'row', paddingHorizontal: 6, paddingVertical: 10, borderBottomWidth: 1 },
-  cell:  { flex: 1, alignItems: 'center', paddingVertical: 8 },
-  name:  { fontSize: 11, fontWeight: '600', marginBottom: 4 },
-  num:   { fontSize: 17, fontWeight: '800' },
-  dot:   { width: 4, height: 4, borderRadius: 2, marginTop: 3 },
-});
 
 // ── Ana Ekran ──────────────────────────────────────────────────────────────────
 export default function ReminderScreen() {
   const { t } = useTranslation();
-  const { medications, settings, addMedication, addMedications, takeMedication, removeMedication } = useApp();
+  const {
+    medications, settings,
+    addMedication, addMedications, takeMedication, removeMedication, updateMedication,
+  } = useApp();
   const theme = getTheme(settings.theme === 'dark');
   const c = theme.colors;
 
-  // Takvim
   const [selectedDate, setSelectedDate] = useState(toDateStr(new Date()));
 
-  // Modal görünürlük
   const [modalVisible,     setModalVisible]     = useState(false);
   const [recurringVisible, setRecurringVisible] = useState(false);
 
-  // Temel form
+  // Form state
   const [medName,     setMedName]     = useState('');
+  const [medNotes,    setMedNotes]    = useState('');
   const [pickerDate,  setPickerDate]  = useState(new Date());
+  const [editingMed,  setEditingMed]  = useState<MedicationSchema | null>(null);
 
-  // Tekli picker kontrolleri
   const [showDate, setShowDate] = useState(false);
   const [showTime, setShowTime] = useState(false);
 
-  // Güncel İlaç (scheduled)
   const [isScheduled,    setIsScheduled]    = useState(false);
   const [scheduleStart,  setScheduleStart]  = useState(new Date());
   const [scheduleEnd,    setScheduleEnd]    = useState(new Date());
@@ -104,6 +137,10 @@ export default function ReminderScreen() {
   const [activeSlot,     setActiveSlot]     = useState<number | null>(null);
 
   const [lastXp, setLastXp] = useState<number | null>(null);
+
+  const minAllowedDate = new Date();
+  minAllowedDate.setDate(minAllowedDate.getDate() - 2);
+  minAllowedDate.setHours(0, 0, 0, 0);
 
   const activeMeds    = medications.filter(m => !m.isRecurring);
   const recurringMeds = medications.filter(m => m.isRecurring);
@@ -116,6 +153,8 @@ export default function ReminderScreen() {
 
   const resetForm = () => {
     setMedName('');
+    setMedNotes('');
+    setEditingMed(null);
     const d = dateFromStr(selectedDate);
     const now = new Date();
     d.setHours(now.getHours(), now.getMinutes());
@@ -126,6 +165,19 @@ export default function ReminderScreen() {
     setScheduleEnd(dateFromStr(selectedDate));
     setTimesPerDay(1);
     setTimeSlots([new Date()]);
+  };
+
+  const handleOpenEdit = (med: MedicationSchema) => {
+    setEditingMed(med);
+    setMedName(med.name);
+    setMedNotes(med.notes ?? '');
+    const d = dateFromStr(med.date);
+    const [h, m] = med.time.split(':').map(Number);
+    d.setHours(h, m);
+    setPickerDate(d);
+    setIsScheduled(false);
+    closeAllPickers();
+    setModalVisible(true);
   };
 
   const handleTimesPerDay = (n: number) => {
@@ -140,12 +192,19 @@ export default function ReminderScreen() {
 
   const handleAdd = async () => {
     if (!medName.trim()) return;
-    if (isScheduled) {
+
+    if (editingMed) {
+      await updateMedication(editingMed.id, {
+        name: medName.trim(),
+        time: toTimeStr(pickerDate),
+        date: toDateStr(pickerDate),
+        notes: medNotes.trim() || undefined,
+      });
+    } else if (isScheduled) {
       const start = dateFromStr(toDateStr(scheduleStart));
       let end = dateFromStr(toDateStr(scheduleEnd));
       if (end < start) end = new Date(start);
 
-      // Tüm (gün × doz) kayıtlarını önce diziye topla, sonra tek seferde kaydet
       const allMeds: MedicationSchema[] = [];
       const cur = new Date(start);
       while (cur <= end) {
@@ -157,6 +216,7 @@ export default function ReminderScreen() {
             date: toDateStr(cur),
             isTaken: false,
             isRecurring: false,
+            notes: medNotes.trim() || undefined,
           });
         }
         cur.setDate(cur.getDate() + 1);
@@ -170,8 +230,10 @@ export default function ReminderScreen() {
         date: toDateStr(pickerDate),
         isTaken: false,
         isRecurring: false,
+        notes: medNotes.trim() || undefined,
       });
     }
+
     resetForm();
     setModalVisible(false);
   };
@@ -219,11 +281,29 @@ export default function ReminderScreen() {
       <View style={styles.medInfo}>
         <Text style={[styles.medName, { color: c.text }]}>{item.name}</Text>
         <Text style={[styles.medTime, { color: c.subtext }]}>{item.time}</Text>
+        {item.notes ? (
+          <Text style={[styles.medNotes, { color: c.subtext }]} numberOfLines={2}>{item.notes}</Text>
+        ) : null}
       </View>
-      <TouchableOpacity style={[styles.deleteBtn, { backgroundColor: c.danger + '22', borderColor: c.danger + '55' }]} onPress={() => removeMedication(item.id)} activeOpacity={0.8}>
+      <TouchableOpacity
+        style={[styles.iconBtn, { backgroundColor: c.secondary + '22', borderColor: c.secondary + '55' }]}
+        onPress={() => handleOpenEdit(item)}
+        activeOpacity={0.8}
+      >
+        <Text style={{ fontSize: 14 }}>✏️</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.iconBtn, { backgroundColor: c.danger + '22', borderColor: c.danger + '55' }]}
+        onPress={() => removeMedication(item.id)}
+        activeOpacity={0.8}
+      >
         <Text style={{ fontSize: 15 }}>🗑</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={[styles.takeBtn, { backgroundColor: c.primary }]} onPress={() => handleTake(item.id)} activeOpacity={0.8}>
+      <TouchableOpacity
+        style={[styles.takeBtn, { backgroundColor: c.primary }]}
+        onPress={() => handleTake(item.id)}
+        activeOpacity={0.8}
+      >
         <Text style={styles.takeBtnText}>✓</Text>
       </TouchableOpacity>
     </View>
@@ -232,8 +312,8 @@ export default function ReminderScreen() {
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
 
-      {/* Takvim şeridi */}
-      <CalendarStrip selected={selectedDate} onSelect={s => { setSelectedDate(s); }} c={c} />
+      {/* Takvim şeridi — geçmiş + gelecek */}
+      <CalendarStrip selected={selectedDate} onSelect={s => setSelectedDate(s)} c={c} />
 
       {/* Güncel ilaçlar banner */}
       {recurringMeds.length > 0 && (
@@ -270,12 +350,14 @@ export default function ReminderScreen() {
         <Text style={styles.fabText}>+</Text>
       </TouchableOpacity>
 
-      {/* ── İlaç Ekleme Modal ── */}
+      {/* ── İlaç Ekleme / Düzenleme Modal ── */}
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.overlay}>
           <View style={[styles.modalCard, { backgroundColor: c.card }]}>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <Text style={[styles.modalTitle, { color: c.text }]}>{t('reminder.addMed')}</Text>
+              <Text style={[styles.modalTitle, { color: c.text }]}>
+                {editingMed ? 'İlacı Düzenle' : t('reminder.addMed')}
+              </Text>
 
               {/* İlaç adı */}
               <TextInput
@@ -299,6 +381,7 @@ export default function ReminderScreen() {
                 </TouchableOpacity>
                 {Platform.OS === 'ios' && showDate && (
                   <DateTimePicker value={pickerDate} mode="date" display="spinner" onChange={onDateChange}
+                    minimumDate={minAllowedDate}
                     locale={settings.language === 'tr' ? 'tr-TR' : 'en-US'} style={styles.iosPicker} />
                 )}
                 <Text style={[styles.label, { color: c.subtext }]}>{t('reminder.medTime')}</Text>
@@ -316,29 +399,43 @@ export default function ReminderScreen() {
                 )}
               </>}
 
-              {/* Güncel İlaç toggle */}
-              <TouchableOpacity
-                style={[styles.scheduleToggle, {
-                  backgroundColor: isScheduled ? c.primary + '1A' : c.inputBg,
-                  borderColor: isScheduled ? c.primary : c.border,
-                }]}
-                onPress={() => { setIsScheduled(p => !p); closeAllPickers(); }}
-                activeOpacity={0.8}
-              >
-                <Text style={{ fontSize: 18, marginRight: 10 }}>{isScheduled ? '☑️' : '⬜'}</Text>
-                <View>
-                  <Text style={[styles.scheduleToggleTitle, { color: isScheduled ? c.primary : c.text }]}>
-                    Güncel İlaç
-                  </Text>
-                  <Text style={[styles.scheduleToggleSub, { color: c.subtext }]}>
-                    Tarih aralığı ve günlük dozları ayarla
-                  </Text>
-                </View>
-              </TouchableOpacity>
+              {/* İlaca özel açıklama */}
+              <Text style={[styles.label, { color: c.subtext }]}>Açıklama (İsteğe Bağlı)</Text>
+              <TextInput
+                style={[styles.input, styles.notesInput, { backgroundColor: c.inputBg, color: c.text, borderColor: c.border }]}
+                placeholder="Örn: Tok karna iç, sabah yarım al..."
+                placeholderTextColor={c.subtext}
+                value={medNotes}
+                onChangeText={setMedNotes}
+                multiline
+                numberOfLines={2}
+                textAlignVertical="top"
+              />
+
+              {/* Güncel İlaç toggle — düzenleme modunda gizli */}
+              {!editingMed && (
+                <TouchableOpacity
+                  style={[styles.scheduleToggle, {
+                    backgroundColor: isScheduled ? c.primary + '1A' : c.inputBg,
+                    borderColor: isScheduled ? c.primary : c.border,
+                  }]}
+                  onPress={() => { setIsScheduled(p => !p); closeAllPickers(); }}
+                  activeOpacity={0.8}
+                >
+                  <Text style={{ fontSize: 18, marginRight: 10 }}>{isScheduled ? '☑️' : '⬜'}</Text>
+                  <View>
+                    <Text style={[styles.scheduleToggleTitle, { color: isScheduled ? c.primary : c.text }]}>
+                      Güncel İlaç
+                    </Text>
+                    <Text style={[styles.scheduleToggleSub, { color: c.subtext }]}>
+                      Tarih aralığı ve günlük dozları ayarla
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              )}
 
               {/* Güncel İlaç genişletilmiş içerik */}
-              {isScheduled && <>
-                {/* Başlangıç tarihi */}
+              {!editingMed && isScheduled && <>
                 <Text style={[styles.label, { color: c.subtext, marginTop: 14 }]}>Başlangıç Tarihi</Text>
                 <TouchableOpacity
                   style={[styles.pickerRow, { backgroundColor: c.inputBg, borderColor: c.border }]}
@@ -350,10 +447,10 @@ export default function ReminderScreen() {
                 </TouchableOpacity>
                 {Platform.OS === 'ios' && showStartDate && (
                   <DateTimePicker value={scheduleStart} mode="date" display="spinner" onChange={onStartDateChange}
+                    minimumDate={minAllowedDate}
                     locale={settings.language === 'tr' ? 'tr-TR' : 'en-US'} style={styles.iosPicker} />
                 )}
 
-                {/* Bitiş tarihi */}
                 <Text style={[styles.label, { color: c.subtext }]}>Bitiş Tarihi</Text>
                 <TouchableOpacity
                   style={[styles.pickerRow, { backgroundColor: c.inputBg, borderColor: c.border }]}
@@ -365,10 +462,10 @@ export default function ReminderScreen() {
                 </TouchableOpacity>
                 {Platform.OS === 'ios' && showEndDate && (
                   <DateTimePicker value={scheduleEnd} mode="date" display="spinner" onChange={onEndDateChange}
+                    minimumDate={minAllowedDate}
                     locale={settings.language === 'tr' ? 'tr-TR' : 'en-US'} style={styles.iosPicker} />
                 )}
 
-                {/* Günde kaç kez */}
                 <Text style={[styles.label, { color: c.subtext, marginTop: 6 }]}>Günde Kaç Kez?</Text>
                 <View style={styles.stepper}>
                   <TouchableOpacity style={[styles.stepBtn, { backgroundColor: c.border }]} onPress={() => handleTimesPerDay(timesPerDay - 1)}>
@@ -380,7 +477,6 @@ export default function ReminderScreen() {
                   </TouchableOpacity>
                 </View>
 
-                {/* Saat dilimleri */}
                 <Text style={[styles.label, { color: c.subtext }]}>Saatler</Text>
                 {timeSlots.map((slot, idx) => (
                   <TouchableOpacity
@@ -405,11 +501,16 @@ export default function ReminderScreen() {
               </>}
 
               <View style={[styles.actions, { marginTop: 18 }]}>
-                <TouchableOpacity style={[styles.actionBtn, { backgroundColor: c.border }]} onPress={() => { resetForm(); setModalVisible(false); }}>
+                <TouchableOpacity
+                  style={[styles.actionBtn, { backgroundColor: c.border }]}
+                  onPress={() => { resetForm(); setModalVisible(false); }}
+                >
                   <Text style={{ color: c.text }}>{t('common.cancel')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.actionBtn, { backgroundColor: c.primary }]} onPress={handleAdd}>
-                  <Text style={{ color: '#fff', fontWeight: '700' }}>{t('common.add')}</Text>
+                  <Text style={{ color: '#fff', fontWeight: '700' }}>
+                    {editingMed ? 'Kaydet' : t('common.add')}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
@@ -418,10 +519,10 @@ export default function ReminderScreen() {
       </Modal>
 
       {/* Android pickers — modal dışında */}
-      {Platform.OS === 'android' && showDate      && <DateTimePicker value={pickerDate}    mode="date" display="default" onChange={onDateChange} />}
+      {Platform.OS === 'android' && showDate      && <DateTimePicker value={pickerDate}    mode="date" display="default" minimumDate={minAllowedDate} onChange={onDateChange} />}
       {Platform.OS === 'android' && showTime      && <DateTimePicker value={pickerDate}    mode="time" display="default" is24Hour onChange={onTimeChange} />}
-      {Platform.OS === 'android' && showStartDate && <DateTimePicker value={scheduleStart} mode="date" display="default" onChange={onStartDateChange} />}
-      {Platform.OS === 'android' && showEndDate   && <DateTimePicker value={scheduleEnd}   mode="date" display="default" onChange={onEndDateChange} />}
+      {Platform.OS === 'android' && showStartDate && <DateTimePicker value={scheduleStart} mode="date" display="default" minimumDate={minAllowedDate} onChange={onStartDateChange} />}
+      {Platform.OS === 'android' && showEndDate   && <DateTimePicker value={scheduleEnd}   mode="date" display="default" minimumDate={minAllowedDate} onChange={onEndDateChange} />}
       {Platform.OS === 'android' && activeSlot !== null && (
         <DateTimePicker value={timeSlots[activeSlot] ?? new Date()} mode="time" display="default" is24Hour onChange={onSlotTimeChange} />
       )}
@@ -433,7 +534,14 @@ export default function ReminderScreen() {
             <Text style={[styles.modalTitle, { color: c.text }]}>{t('reminder.currentMeds')}</Text>
             {recurringMeds.map(med => (
               <View key={med.id} style={[styles.recRow, { borderColor: c.border }]}>
-                <Text style={[{ color: c.text, flex: 1 }]}>{med.name}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: c.text }}>{med.name}</Text>
+                  {med.notes ? (
+                    <Text style={{ color: c.subtext, fontSize: 12, marginTop: 2, fontStyle: 'italic' }} numberOfLines={1}>
+                      {med.notes}
+                    </Text>
+                  ) : null}
+                </View>
                 <TouchableOpacity style={[styles.smallBtn, { backgroundColor: c.primary }]} onPress={() => handleQuickAdd(med)}>
                   <Text style={{ color: '#fff', fontSize: 12 }}>{t('reminder.quickAdd')}</Text>
                 </TouchableOpacity>
@@ -442,7 +550,10 @@ export default function ReminderScreen() {
                 </TouchableOpacity>
               </View>
             ))}
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: c.border, alignSelf: 'stretch', marginTop: 12 }]} onPress={() => setRecurringVisible(false)}>
+            <TouchableOpacity
+              style={[styles.actionBtn, { backgroundColor: c.border, alignSelf: 'stretch', marginTop: 12 }]}
+              onPress={() => setRecurringVisible(false)}
+            >
               <Text style={{ color: c.text, textAlign: 'center' }}>{t('common.close')}</Text>
             </TouchableOpacity>
           </View>
@@ -459,7 +570,8 @@ const styles = StyleSheet.create({
   medInfo: { flex: 1 },
   medName: { fontSize: 16, fontWeight: '600' },
   medTime: { fontSize: 13, marginTop: 2 },
-  deleteBtn: { width: 34, height: 34, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center', marginRight: 8 },
+  medNotes: { fontSize: 12, marginTop: 4, fontStyle: 'italic' },
+  iconBtn: { width: 34, height: 34, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center', marginRight: 6 },
   takeBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   takeBtnText: { color: '#fff', fontSize: 18, fontWeight: '700' },
   fab: { position: 'absolute', bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', elevation: 4 },
@@ -473,6 +585,7 @@ const styles = StyleSheet.create({
   modalCard: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24, paddingBottom: 40, maxHeight: '92%' },
   modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 16 },
   input: { borderRadius: 10, borderWidth: 1, padding: 12, fontSize: 15, marginBottom: 12 },
+  notesInput: { minHeight: 64, paddingTop: 12 },
   label: { fontSize: 12, fontWeight: '600', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 },
   pickerRow: { flexDirection: 'row', alignItems: 'center', borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 10 },
   pickerIcon: { fontSize: 18, marginRight: 10 },

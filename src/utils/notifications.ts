@@ -1,4 +1,5 @@
 import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -9,6 +10,18 @@ Notifications.setNotificationHandler({
     shouldShowList: true,
   }),
 });
+
+// Android'de zamanlanmış bildirimlerin ses çalması için kanal zorunlu.
+if (Platform.OS === 'android') {
+  Notifications.setNotificationChannelAsync('medication-reminder', {
+    name: 'İlaç Hatırlatıcı',
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: 'default',
+    vibrationPattern: [0, 300, 200, 300],
+    lightColor: '#4CAF50',
+    enableVibrate: true,
+  });
+}
 
 // Remote push token kaydını kapat — sadece yerel bildirim kullanıyoruz.
 // Expo Go'da push token uyarısını önler.
@@ -51,10 +64,12 @@ export async function scheduleNotification(
         title: '💊 MedGrowth',
         body,
         data: { medId },
+        sound: 'default',
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
         date: triggerDate,
+        channelId: 'medication-reminder',
       },
     });
 

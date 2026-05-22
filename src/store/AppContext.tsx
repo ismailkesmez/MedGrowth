@@ -23,6 +23,7 @@ interface AppContextType {
   addMedications: (meds: MedicationSchema[]) => Promise<void>;
   takeMedication: (id: string) => Promise<void>;
   removeMedication: (id: string) => Promise<void>;
+  updateMedication: (id: string, updates: Partial<MedicationSchema>) => Promise<void>;
   updateSettings: (s: Partial<AppSettings>) => Promise<void>;
   resetAll: () => Promise<void>;
   claimAchievement: (threshold: number) => Promise<void>;
@@ -158,11 +159,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setPendingLevelUp(newLevel);
     }
 
+    const nowDateStr = new Date().toISOString().split('T')[0];
+    const takenAt = med.date < nowDateStr
+      ? new Date(`${med.date}T${med.time}:00`).toISOString()
+      : new Date().toISOString();
+
     const entry: HistoryEntry = {
       id: Date.now().toString(),
       name: med.name,
       addedDate: med.date,
-      takenAt: new Date().toISOString(),
+      takenAt,
     };
 
     const updatedMeds = medications.filter(m => m.id !== id);
@@ -194,6 +200,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setHistory(updatedHistory);
     await storage.saveUser(updatedUser);
     setUserState(updatedUser);
+  };
+
+  const updateMedication = async (id: string, updates: Partial<MedicationSchema>) => {
+    const med = medications.find(m => m.id === id);
+    if (!med) return;
+
+    const updatedMed = { ...med, ...updates };
+
+    if (med.notificationId) {
+      await cancelNotification(med.notificationId);
+    }
+
+    let newNotifId: string | undefined;
+    if (!updatedMed.isRecurring) {
+      const notifId = await scheduleNotification(
+        updatedMed.id, updatedMed.name, updatedMed.date, updatedMed.time, settings.language
+      );
+      if (notifId) newNotifId = notifId;
+    }
+
+    const finalMed: MedicationSchema = { ...updatedMed, notificationId: newNotifId };
+    const updated = medications.map(m => m.id === id ? finalMed : m);
+    await storage.saveMedications(updated);
+    setMedications(updated);
   };
 
   const removeMedication = async (id: string) => {
@@ -375,7 +405,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   return (
     <AppContext.Provider value={{
       user, medications, history, settings, isLoading,
-      setUser, addMedication, addMedications, takeMedication, removeMedication,
+      setUser, addMedication, addMedications, takeMedication, removeMedication, updateMedication,
       updateSettings, resetAll, claimAchievement, unlockAllAchievements, buyTreeSkin,
       setActiveTree, tapTree, buyTapPower, claimTapAchievement, popBubble, refreshData, pendingLevelUp, clearLevelUp,
     }}>
